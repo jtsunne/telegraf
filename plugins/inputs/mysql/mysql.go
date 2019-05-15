@@ -28,6 +28,7 @@ type Mysql struct {
 	GatherInfoSchemaAutoInc             bool     `toml:"gather_info_schema_auto_inc"`
 	GatherInnoDBMetrics                 bool     `toml:"gather_innodb_metrics"`
 	GatherSlaveStatus                   bool     `toml:"gather_slave_status"`
+	GatherAllSlaveChannels              bool     `toml:"gather_all_slave_channels"`
 	GatherBinaryLogs                    bool     `toml:"gather_binary_logs"`
 	GatherTableIOWaits                  bool     `toml:"gather_table_io_waits"`
 	GatherTableLockWaits                bool     `toml:"gather_table_lock_waits"`
@@ -90,6 +91,9 @@ var sampleConfig = `
   #
   ## gather metrics from SHOW SLAVE STATUS command output
   gather_slave_status                       = true
+  #
+  ## gather metrics from all channels from SHOW SLAVE STATUS command output
+  gather_all_slave_channels                 = false
   #
   ## gather metrics from SHOW BINARY LOGS command output
   gather_binary_logs                        = false
@@ -588,9 +592,11 @@ func (m *Mysql) gatherSlaveStatuses(db *sql.DB, serv string, acc telegraf.Accumu
 	tags := map[string]string{"server": servtag}
 	fields := make(map[string]interface{})
 
-	// to save the column names as a field key
-	// scanning keys and values separately
-	if rows.Next() {
+	// for each channel record
+	for rows.Next() {
+		// to save the column names as a field key
+		// scanning keys and values separately
+
 		// get columns names, and create an array with its length
 		cols, err := rows.Columns()
 		if err != nil {
@@ -609,11 +615,23 @@ func (m *Mysql) gatherSlaveStatuses(db *sql.DB, serv string, acc telegraf.Accumu
 			if m.MetricVersion >= 2 {
 				col = strings.ToLower(col)
 			}
-			if value, ok := m.parseValue(*vals[i].(*sql.RawBytes)); ok {
+
+			if m.GatherAllSlaveChannels && strings.ToLower(col) == "channel_name" {
+				// Since the default channel name is empty, we need this block
+				channelName := "default"
+				if len(*vals[i].(*sql.RawBytes)) > 0 {
+					channelName = string(*vals[i].(*sql.RawBytes))
+				}
+				tags["channel"] = channelName
+			} else if value, ok := m.parseValue(*vals[i].(*sql.RawBytes)); ok {
 				fields["slave_"+col] = value
 			}
 		}
 		acc.AddFields("mysql", fields, tags)
+
+		if !m.GatherAllSlaveChannels {
+			break
+		}
 	}
 
 	return nil
